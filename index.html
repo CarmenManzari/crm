@@ -752,90 +752,88 @@ body{font-family:'Instrument Sans',sans-serif;background:var(--bg);color:var(--i
 // ── SUPABASE CONFIG ────────────────────────────────────────────
 const SUPABASE_URL = 'https://xuevndiudhuxguwkkjgx.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh1ZXZuZGl1ZGh1eGd1d2tramd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4ODEwNTYsImV4cCI6MjA4ODQ1NzA1Nn0.MilM-6vxdQFGIJum-JFx46tIg4J9hC5WhmLDy_DY8Ak';
-let sbClient = null;
 let isOnline = false;
 
-function initSupabase() {
-  try {
-    sbClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-    isOnline = true;
-    setSyncStatus('online', '☁️ Cloud attivo');
-    loadFromCloud();
-  } catch(e) {
-    console.error('Supabase init error:', e);
-    setSyncStatus('error', 'Solo locale');
-  }
-}
+const sbHeaders = {
+  'Content-Type': 'application/json',
+  'apikey': SUPABASE_KEY,
+  'Authorization': 'Bearer ' + SUPABASE_KEY,
+  'Prefer': 'return=minimal'
+};
 
 function setSyncStatus(status, label) {
   const dot = document.getElementById('sync-dot');
   const lbl = document.getElementById('sync-label');
-  if(dot) { dot.className = 'sync-dot ' + status; }
+  if(dot) dot.className = 'sync-dot ' + status;
   if(lbl) lbl.textContent = label;
 }
 
+async function initSupabase() {
+  try {
+    setSyncStatus('syncing', 'Connessione...');
+    await loadFromCloud();
+  } catch(e) {
+    console.error('Supabase error:', e);
+    setSyncStatus('error', 'Solo locale');
+  }
+}
+
 async function loadFromCloud() {
-  if(!sbClient) return;
   try {
     setSyncStatus('syncing', 'Caricamento...');
-    const { data, error } = await sbClient.from('clienti').select('*');
-    if(error) throw error;
+    const resp = await fetch(SUPABASE_URL + '/rest/v1/clienti?select=*', {
+      method: 'GET',
+      headers: sbHeaders
+    });
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
     if(data && data.length > 0) {
       const cloudClients = data.map(row => row.data);
-      // Merge: cloud wins for existing, keep local-only
       const cloudIds = new Set(cloudClients.map(c => c.id));
       const localOnly = clients.filter(c => !cloudIds.has(c.id));
+      // Push local-only to cloud
+      for(const c of localOnly) await saveToCloud(c, true);
       clients = [...cloudClients, ...localOnly];
       save();
       renderDashboard();
       renderStats();
     } else if(clients.length > 0) {
-      // Push local data to cloud
-      await pushAllToCloud();
+      for(const c of clients) await saveToCloud(c, true);
     }
+    isOnline = true;
     setSyncStatus('online', '☁️ Sincronizzato');
   } catch(e) {
     console.error('Load error:', e);
-    setSyncStatus('error', 'Errore sync');
+    isOnline = false;
+    setSyncStatus('error', 'Offline - dati locali');
   }
 }
 
-async function pushAllToCloud() {
-  if(!sbClient || clients.length === 0) return;
+async function saveToCloud(client, silent=false) {
   try {
-    const rows = clients.map(c => ({ id: c.id, data: c, updated_at: new Date().toISOString() }));
-    const { error } = await sbClient.from('clienti').upsert(rows, { onConflict: 'id' });
-    if(error) throw error;
-  } catch(e) {
-    console.error('Push error:', e);
-  }
-}
-
-async function saveToCloud(client) {
-  if(!sbClient) return;
-  try {
-    setSyncStatus('syncing', 'Salvataggio...');
-    const { error } = await sbClient.from('clienti').upsert(
-      { id: client.id, data: client, updated_at: new Date().toISOString() },
-      { onConflict: 'id' }
-    );
-    if(error) throw error;
-    setSyncStatus('online', '☁️ Salvato');
+    if(!silent) setSyncStatus('syncing', 'Salvataggio...');
+    const resp = await fetch(SUPABASE_URL + '/rest/v1/clienti', {
+      method: 'POST',
+      headers: { ...sbHeaders, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ id: client.id, data: client, updated_at: new Date().toISOString() })
+    });
+    if(!resp.ok) { const t=await resp.text(); throw new Error(t); }
+    isOnline = true;
+    if(!silent) setSyncStatus('online', '☁️ Salvato ✓');
   } catch(e) {
     console.error('Save error:', e);
-    setSyncStatus('error', 'Errore salvataggio');
+    if(!silent) setSyncStatus('error', 'Errore salvataggio');
   }
 }
 
 async function deleteFromCloud(id) {
-  if(!sbClient) return;
   try {
-    await sbClient.from('clienti').delete().eq('id', id);
-  } catch(e) {
-    console.error('Delete error:', e);
-  }
+    await fetch(SUPABASE_URL + '/rest/v1/clienti?id=eq.' + id, {
+      method: 'DELETE',
+      headers: sbHeaders
+    });
+  } catch(e) { console.error('Delete error:', e); }
 }
-
 
 // ── STATE ──────────────────────────────────────────────────────
 let clients = JSON.parse(localStorage.getItem('enercrm_pro_v3')||'[]');
