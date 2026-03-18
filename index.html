@@ -750,17 +750,10 @@ body{font-family:'Instrument Sans',sans-serif;background:var(--bg);color:var(--i
 <script>
 
 // ── SUPABASE CONFIG ────────────────────────────────────────────
-const SUPABASE_URL = 'https://xuevndiudhuxguwkkjgx.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh1ZXZuZGl1ZGh1eGd1d2tramd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4ODEwNTYsImV4cCI6MjA4ODQ1NzA1Nn0.MilM-6vxdQFGIJum-JFx46tIg4J9hC5WhmLDy_DY8Ak';
+const SB_URL = 'https://xuevndiudhuxguwkkjgx.supabase.co/rest/v1';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh1ZXZuZGl1ZGh1eGd1d2tramd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI4ODEwNTYsImV4cCI6MjA4ODQ1NzA1Nn0.MilM-6vxdQFGIJum-JFx46tIg4J9hC5WhmLDy_DY8Ak';
+const SB_HEADERS = {'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY};
 let isOnline = false;
-
-const sbHeaders = {
-  'Content-Type': 'application/json',
-  'apikey': SUPABASE_KEY,
-  'Authorization': 'Bearer ' + SUPABASE_KEY,
-  'Prefer': 'return=minimal',
-  'X-Client-Info': 'enercrm/1.0'
-};
 
 function setSyncStatus(status, label) {
   const dot = document.getElementById('sync-dot');
@@ -769,36 +762,51 @@ function setSyncStatus(status, label) {
   if(lbl) lbl.textContent = label;
 }
 
+function sbFetch(path, method='GET', body=null) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, SB_URL + path, true);
+    Object.entries(SB_HEADERS).forEach(([k,v]) => xhr.setRequestHeader(k, v));
+    if(method === 'POST' || method === 'PATCH') {
+      xhr.setRequestHeader('Prefer', 'resolution=merge-duplicates,return=minimal');
+    }
+    xhr.onload = () => {
+      if(xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(xhr.responseText ? JSON.parse(xhr.responseText) : {}); }
+        catch(e) { resolve({}); }
+      } else {
+        reject(new Error('HTTP ' + xhr.status + ': ' + xhr.responseText));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error'));
+    xhr.ontimeout = () => reject(new Error('Timeout'));
+    xhr.timeout = 10000;
+    xhr.send(body ? JSON.stringify(body) : null);
+  });
+}
+
 async function initSupabase() {
+  if(window.location.protocol === 'file:') {
+    setSyncStatus('error', '⚠️ Usa GitHub per il sync');
+    return;
+  }
   try {
     setSyncStatus('syncing', 'Connessione...');
-    // Test connection first
-    const test = await fetch(SUPABASE_URL + '/rest/v1/', {
-      method: 'GET',
-      headers: {'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY}
-    });
-    if(!test.ok) throw new Error('Connection failed: ' + test.status);
     await loadFromCloud();
   } catch(e) {
-    console.error('Supabase error:', e);
-    setSyncStatus('error', 'Offline - solo locale');
+    console.error('Supabase init error:', e);
+    setSyncStatus('error', 'Offline');
   }
 }
 
 async function loadFromCloud() {
   try {
     setSyncStatus('syncing', 'Caricamento...');
-    const resp = await fetch(SUPABASE_URL + '/rest/v1/clienti?select=*', {
-      method: 'GET',
-      headers: sbHeaders
-    });
-    if(!resp.ok) throw new Error('HTTP ' + resp.status);
-    const data = await resp.json();
+    const data = await sbFetch('/clienti?select=*');
     if(data && data.length > 0) {
       const cloudClients = data.map(row => row.data);
       const cloudIds = new Set(cloudClients.map(c => c.id));
       const localOnly = clients.filter(c => !cloudIds.has(c.id));
-      // Push local-only to cloud
       for(const c of localOnly) await saveToCloud(c, true);
       clients = [...cloudClients, ...localOnly];
       save();
@@ -811,34 +819,30 @@ async function loadFromCloud() {
     setSyncStatus('online', '☁️ Sincronizzato');
   } catch(e) {
     console.error('Load error:', e);
-    isOnline = false;
-    setSyncStatus('error', 'Offline - dati locali');
+    setSyncStatus('error', 'Errore: ' + e.message);
   }
 }
 
 async function saveToCloud(client, silent=false) {
+  if(window.location.protocol === 'file:') return;
   try {
     if(!silent) setSyncStatus('syncing', 'Salvataggio...');
-    const resp = await fetch(SUPABASE_URL + '/rest/v1/clienti', {
-      method: 'POST',
-      headers: { ...sbHeaders, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify({ id: client.id, data: client, updated_at: new Date().toISOString() })
-    });
-    if(!resp.ok) { const t=await resp.text(); throw new Error(t); }
+    await sbFetch('/clienti', 'POST', { id: client.id, data: client, updated_at: new Date().toISOString() });
     isOnline = true;
-    if(!silent) setSyncStatus('online', '☁️ Salvato ✓');
+    if(!silent) {
+      setSyncStatus('online', '☁️ Salvato ✓');
+      setTimeout(()=>setSyncStatus('online','☁️ Sincronizzato'), 2000);
+    }
   } catch(e) {
     console.error('Save error:', e);
-    if(!silent) setSyncStatus('error', 'Errore salvataggio');
+    if(!silent) setSyncStatus('error', 'Errore salvataggio: ' + e.message);
   }
 }
 
 async function deleteFromCloud(id) {
+  if(window.location.protocol === 'file:') return;
   try {
-    await fetch(SUPABASE_URL + '/rest/v1/clienti?id=eq.' + id, {
-      method: 'DELETE',
-      headers: sbHeaders
-    });
+    await sbFetch('/clienti?id=eq.' + id, 'DELETE');
   } catch(e) { console.error('Delete error:', e); }
 }
 
@@ -864,8 +868,32 @@ const displayName=c=>c.tipo==='business'?(c.ragioneSociale||fullName(c)):fullNam
 const fullName=c=>((c.nome||'')+' '+(c.cognome||'')).trim();
 const avatarColor=id=>{let h=0;for(let ch of(id||''))h=(h*31+ch.charCodeAt(0))%COLORS.length;return COLORS[h];};
 const today0=()=>{const d=new Date();d.setHours(0,0,0,0);return d;};
-const daysTo=s=>{if(!s)return null;const d=new Date(s);d.setHours(0,0,0,0);return Math.ceil((d-today0())/86400000);};
-const fmtDate=s=>{if(!s)return'—';return new Date(s).toLocaleDateString('it-IT',{day:'2-digit',month:'short',year:'numeric'});};
+const daysTo=s=>{
+  if(!s)return null;
+  let d;
+  // Handle DD/MM/YYYY format from Bitrix24
+  if(/^\d{2}\/\d{2}\/\d{4}/.test(s)){
+    const [dd,mm,yyyy]=s.split('/');
+    d=new Date(yyyy+'-'+mm+'-'+dd);
+  } else {
+    d=new Date(s);
+  }
+  if(isNaN(d.getTime()))return null;
+  d.setHours(0,0,0,0);
+  return Math.ceil((d-today0())/86400000);
+};
+const fmtDate=s=>{
+  if(!s)return'—';
+  let d;
+  if(/^\d{2}\/\d{2}\/\d{4}/.test(s)){
+    const [dd,mm,yyyy]=s.split('/');
+    d=new Date(yyyy+'-'+mm+'-'+dd);
+  } else {
+    d=new Date(s);
+  }
+  if(isNaN(d.getTime()))return s;
+  return d.toLocaleDateString('it-IT',{day:'2-digit',month:'short',year:'numeric'});
+};
 const typeColor=t=>({luce:'var(--luce)',gas:'var(--gas)',tel:'var(--tel)',altro:'var(--altro)'}[t]||'var(--soft)');
 const typeIcon=t=>({luce:'⚡',gas:'🔥',tel:'📡',altro:'📦'}[t]||'📦');
 const typeName=t=>({luce:'Luce',gas:'Gas',tel:'Telefonia',altro:'Altro'}[t]||t);
