@@ -318,6 +318,7 @@ td{padding:8px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;ve
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
 </head>
 <body>
 
@@ -2450,7 +2451,7 @@ function renderTable(){
     const isBegheTab = activeTab==='beghe';
     const scadToShow = r.scadenza || (r.pods&&r.pods[0]?r.pods[0].data_scadenza:'');
     // Calcola colore allerta considerando TUTTE le scadenze dei POD/PDR
-    const allScadenze = [r.scadenza, ...((r.pods||[]).map(p=>p.data_scadenza))].filter(Boolean);
+    const allScadenze = [r.scadenza, ...((r.pods||[]).map(p=>p.data_scadenza)), ...((r.servizi||[]).map(s=>s.scadenza))].filter(Boolean);
     const allDays = allScadenze.map(s=>daysDiff(s)).filter(v=>v!==null);
     const minDays = allDays.length ? Math.min(...allDays) : null;
     const d = minDays;
@@ -2520,7 +2521,12 @@ function renderTable(){
         const fPod=pod?(pod.fornitore_entrante||pod.fornitore_uscente||''):'';
         const fPdr=pdr?(pdr.fornitore_entrante||pdr.fornitore_uscente||''):'';
         if(fPod&&fPdr&&fPod!==fPdr) return fPod+' / '+fPdr;
-        return fPod||fPdr||r.fornitore||'-';
+        let mainForn = fPod||fPdr||r.fornitore;
+        if(!mainForn || mainForn === '-') {
+          const sForn = (r.servizi||[]).map(s=>s.fornitore).filter(Boolean).join(', ');
+          if(sForn) return sForn;
+        }
+        return mainForn||'-';
       })()}</td>
       <td><span class="badge ${sl}">${r.stato}</span></td>
       <td style="${isBegheTab?'':''+sc}">${(()=>{
@@ -2529,11 +2535,19 @@ function renderTable(){
         const allPods = pods.filter(p=>p.tipo==='pod'&&p.data_scadenza);
         const allPdrs = pods.filter(p=>p.tipo==='pdr'&&p.data_scadenza);
 
-        // Se non ci sono POD/PDR con scadenze, usa la scadenza generica
-        if(!allPods.length && !allPdrs.length) return fmtDate(scadToShow);
-
-        // Costruisce righe per ogni POD con scadenza unica
+        // Costruisce righe per ogni POD e Servizio con scadenza
         const lines = [];
+        
+        // Servizi (Telefonia, ecc.)
+        (r.servizi||[]).forEach(s => {
+          if(s.scadenza) {
+            const ic = {tel:'📱',fotovoltaico:'☀️',finanziamento:'💳',ass:'🛡',auto:'🚗',altro:'➕'}[s.tipo]||'➕';
+            lines.push('<span style="white-space:nowrap">'+ic+' '+fmtDate(s.scadenza)+'</span>');
+          }
+        });
+
+        // Se non ci sono POD/PDR né servizi con scadenze, usa la scadenza generica
+        if(!allPods.length && !allPdrs.length && !lines.length) return fmtDate(scadToShow);
         // POD (Luce)
         if(allPods.length===1){
           lines.push('<span style="white-space:nowrap">⚡ '+fmtDate(allPods[0].data_scadenza)+'</span>');
@@ -8009,6 +8023,23 @@ function buildSchedaHtml(r, tipo, now) {
       });
       html += '</div>';
     }
+    if ((r.servizi||[]).length) {
+      html += '<div class="pp-sec"><div class="pp-sec-title">Servizi aggiuntivi</div>';
+      r.servizi.forEach((s,i) => {
+        const SLABEL = {tel:'📱 Telefonia', fotovoltaico:'☀️ Fotovoltaico', finanziamento:'💳 Finanziamento', ass:'🛡 Assicurazione', auto:'🚗 Noleggio Auto', altro:'📦 Altro'};
+        html += '<div class="pc"><strong>'+(SLABEL[s.tipo]||s.tipo)+'</strong><div class="pp-grid" style="margin-top:4px">';
+        html += pr('Fornitore', s.fornitore);
+        html += pr('Codice contratto', s.codice);
+        html += pr('Data inizio', fmtDate(s.inizio));
+        html += pr('Data scadenza', fmtDate(s.scadenza));
+        html += pr('Tariffa / Piano', s.piano);
+        if (s.tipo==='tel') html += pr('N° SIM / Linee', s.sim);
+        if (s.valore) html += pr('Valore', '€ '+parseFloat(s.valore).toFixed(2));
+        if (s.nota || s.note) html += '<div style="grid-column:1/-1;font-size:11px;color:#555;margin-top:4px"><strong>Note:</strong> '+(s.nota||s.note)+'</div>';
+        html += '</div></div>';
+      });
+      html += '</div>';
+    }
     if (r.note) html += '<div class="pp-sec"><div class="pp-sec-title">Note</div><div style="font-size:12px;padding:6px 0">'+r.note+'</div></div>';
   }
   if (tipo === 'beghe') {
@@ -8103,13 +8134,19 @@ function scadenzeStr(r){
   const pods = r.pods||[];
   const allPods = pods.filter(p=>p.tipo==='pod'&&p.data_scadenza);
   const allPdrs = pods.filter(p=>p.tipo==='pdr'&&p.data_scadenza);
-  if(!allPods.length && !allPdrs.length){
+  const parts = [];
+  (r.servizi||[]).forEach(s => {
+    if(s.scadenza) {
+      const ic = {tel:'📱',fotovoltaico:'☀️',finanziamento:'💳',ass:'🛡',auto:'🚗',altro:'➕'}[s.tipo]||'➕';
+      parts.push(ic+' '+fmtDate(s.scadenza));
+    }
+  });
+  allPods.forEach(p=>parts.push('⚡ '+fmtDate(p.data_scadenza)));
+  allPdrs.forEach(p=>parts.push('🔥 '+fmtDate(p.data_scadenza)));
+  if(!parts.length){
     const generica = r.scadenza || (r.pods&&r.pods[0]?r.pods[0].data_scadenza:'');
     return generica ? fmtDate(generica) : '-';
   }
-  const parts = [];
-  allPods.forEach(p=>parts.push('⚡ '+fmtDate(p.data_scadenza)));
-  allPdrs.forEach(p=>parts.push('🔥 '+fmtDate(p.data_scadenza)));
   return parts.join(' &nbsp;·&nbsp; ');
 }
 
@@ -8491,6 +8528,35 @@ function renderTkLogList() {
 
 var DOCUMENTI_URL = 'https://documenti.carmenmanzari022.workers.dev/';
 
+// ---------- NOTIFICA EMAIL TICKET (EmailJS) ----------
+var EMAILJS_PUBLIC_KEY = 'plTJf3g3qNFURnHCH';
+var EMAILJS_SERVICE_ID = 'service_jijcas7';
+var EMAILJS_TEMPLATE_ID = 'template_kucbp0d';
+var EMAILJS_TO = 'seven.valenzano2024@gmail.com';
+
+try { emailjs.init(EMAILJS_PUBLIC_KEY); } catch(e) { console.error('EmailJS init error:', e); }
+
+function inviaNotificaTicket(tk) {
+  if (typeof emailjs === 'undefined') return;
+  var catLabel = (TICKET_CAT_LABEL && TICKET_CAT_LABEL[tk.categoria]) ? TICKET_CAT_LABEL[tk.categoria] : (tk.categoria||'');
+  emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+    to_email: EMAILJS_TO,
+    ticket_numero: tk.nr || '',
+    ticket_categoria: catLabel,
+    ticket_tipo: tk.tipo || '',
+    ticket_cliente: tk.cliente || '',
+    ticket_priorita: tk.priorita || '',
+    ticket_fornitore: tk.fornitore || '-',
+    ticket_scadenza: tk.scadenza || '-',
+    ticket_note: tk.note || '-',
+    tk_assegnato_da: window._userName || 'utente'
+  }).then(function(){
+    console.log('Notifica ticket inviata ✓');
+  }).catch(function(err){
+    console.error('Errore invio notifica ticket:', err);
+  });
+}
+
 function apriDocumentiCliente() {
   var nome = (document.getElementById('tk_cliente').value || '').trim();
   if (!nome) { alert('Inserisci prima il nome del cliente.'); return; }
@@ -8577,6 +8643,7 @@ function salvaTicket() {
     ticketData.push(obj);
   }
   saveTicketDB(ticketData);
+  inviaNotificaTicket(obj);
   document.getElementById('ticketModal').classList.remove('open');
   renderTicketPanel();
   updateTicketBadge();
@@ -8597,6 +8664,7 @@ function risolviTicket() {
     tk.log = (_tkLogTmp||[]);
     tk.risposte_fornitore = (_tkRfTmp||[]);
     saveTicketDB(ticketData);
+    inviaNotificaTicket(tk);
   }
   document.getElementById('ticketModal').classList.remove('open');
   renderTicketPanel();
